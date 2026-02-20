@@ -21,7 +21,7 @@ symbols = [
     "BTC-USD"
 ]
 
-intervals = ["5m","15m","60m","240m","1d"]
+intervals = ["5m","15m","60m","4h","1d"]
 
 def fetch_data():
     print("Fetching market data...")
@@ -61,3 +61,4 @@ while True:
     schedule.run_pending()
 
     time.sleep(5)
+
