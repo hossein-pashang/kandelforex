@@ -67,7 +67,12 @@ def fetch_data():
             try:
                 df = yf.download(symbol, start=start_date, interval=interval, progress=False)
                 if df.empty:
-                    continue
+                    # وقتی داده نیست، یک ردیف N/A بساز
+                    df = pd.DataFrame([{
+                        'Date': datetime.now(),
+                        'Open': 'N/A', 'High': 'N/A', 'Low': 'N/A', 'Close': 'N/A', 'Volume': 'N/A'
+                    }])
+
                 df.reset_index(inplace=True)
                 df["Symbol"] = symbol
                 df["Interval"] = interval
