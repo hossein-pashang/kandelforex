@@ -59,4 +59,5 @@ schedule.every(10).minutes.do(fetch_data)
 
 while True:
     schedule.run_pending()
+
     time.sleep(5)
