@@ -9,23 +9,24 @@ from datetime import datetime, timedelta
 # ====== ENV VARIABLES ======
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
 SAVE_FILE = "market_data.csv"
 
 # ====== Symbols & Intervals ======
 symbols = [
     # Major Forex
-    "EURUSD=X","GBPUSD=X","USDJPY=X","USDCHF=X",
-    "AUDUSD=X","NZDUSD=X","USDCAD=X","EURGBP=X","EURJPY=X","GBPJPY=X",
+    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X",
+    "AUDUSD=X", "NZDUSD=X", "USDCAD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X",
+    # Minor Forex
+    "EURAUD=X", "EURNZD=X", "GBPCHF=X", "AUDJPY=X", "AUDNZD=X", "NZDJPY=X",
     # Commodities
-    "GC=F","SI=F","CL=F",
+    "GC=F", "SI=F", "CL=F",
     # Indexes
-    "^DXY","^GSPC","^VIX",
+    "^DXY", "^GSPC", "^VIX",
     # Crypto
     "BTC-USD"
 ]
 
-intervals = ["5m","15m","60m","4h","1d"]  # Timeframes
+intervals = ["5m", "15m", "60m", "4h", "1d"]
 
 # ====== Market Structure Helper ======
 def market_structure(df):
@@ -40,18 +41,27 @@ def market_structure(df):
     lows = df['Low']
 
     # Market Structure State
-    if highs.is_monotonic_increasing and lows.is_monotonic_increasing:
-        result['Market Structure State'] = 'Uptrend'
-    elif highs.is_monotonic_decreasing and lows.is_monotonic_decreasing:
-        result['Market Structure State'] = 'Downtrend'
-    else:
-        result['Market Structure State'] = 'Sideways'
+    try:
+        if highs.is_monotonic_increasing and lows.is_monotonic_increasing:
+            result['Market Structure State'] = 'Uptrend'
+        elif highs.is_monotonic_decreasing and lows.is_monotonic_decreasing:
+            result['Market Structure State'] = 'Downtrend'
+        else:
+            result['Market Structure State'] = 'Sideways'
+    except:
+        result['Market Structure State'] = 'N/A'
 
     # Simple Liquidity Sweep Example
-    result['Liquidity Sweep Flag'] = 'Yes' if highs.iloc[-1] > highs.max() else 'No'
+    try:
+        result['Liquidity Sweep Flag'] = 'Yes' if highs.iloc[-1] > highs.max() else 'No'
+    except:
+        result['Liquidity Sweep Flag'] = 'N/A'
 
     # Expansion / Compression (Volatility)
-    result['Expansion / Compression'] = 'Expansion' if highs.std() > lows.std() else 'Compression'
+    try:
+        result['Expansion / Compression'] = 'Expansion' if highs.std() > lows.std() else 'Compression'
+    except:
+        result['Expansion / Compression'] = 'N/A'
 
     return result
 
@@ -67,15 +77,10 @@ def fetch_data():
             try:
                 df = yf.download(symbol, start=start_date, interval=interval, progress=False)
                 if df.empty:
-                    # وقتی داده نیست، یک ردیف N/A بساز
-                    df = pd.DataFrame([{
-                        'Date': datetime.now(),
-                        'Open': 'N/A', 'High': 'N/A', 'Low': 'N/A', 'Close': 'N/A', 'Volume': 'N/A'
-                    }])
-
+                    continue
                 df.reset_index(inplace=True)
-                df["Symbol"] = symbol
-                df["Interval"] = interval
+                df['Symbol'] = symbol
+                df['Interval'] = interval
 
                 # Market structure info
                 ms_info = market_structure(df)
