@@ -160,7 +160,7 @@ def fetch_data():
                 df["Volatility Regime"] = volatility_regime(df)
                 df["Session"] = session_label()
 
-                all_data.append(df.tail(1))  # فقط آخرین کندل برای تحلیل ارشد
+               all_data.append(df)  # فقط آخرین کندل برای تحلیل ارشد
 
             except Exception as e:
                 print(f"Error {symbol}: {e}")
@@ -187,3 +187,4 @@ schedule.every(10).minutes.do(fetch_data)
 while True:
     schedule.run_pending()
     time.sleep(5)
+
