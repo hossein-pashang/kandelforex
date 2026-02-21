@@ -4,7 +4,7 @@ import numpy as np
 import schedule
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ================= ENV =================
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
@@ -19,7 +19,6 @@ headers = {
 }
 
 # ================= SYMBOLS =================
-# Forex Majors & Minors
 forex_symbols = [
     "EUR_USD","GBP_USD","USD_JPY","USD_CHF",
     "AUD_USD","NZD_USD","USD_CAD",
@@ -28,20 +27,18 @@ forex_symbols = [
     "AUD_JPY","AUD_NZD","NZD_JPY"
 ]
 
-# Commodities (OANDA naming)
 commodities = [
-    "XAU_USD",   # Gold
-    "XAG_USD",   # Silver
-    "BCO_USD"    # Brent Oil (اگر نبود امتحان کن: WTICO_USD)
+    "XAU_USD",
+    "XAG_USD",
+    "BCO_USD"
 ]
 
-# Indices (ممکن است بسته به ریجن کمی متفاوت باشند)
 indices = [
-    "SPX500_USD",   # S&P500
-    "NAS100_USD",   # Nasdaq
-    "US30_USD",     # Dow Jones
-    "DE30_EUR",     # DAX
-    "UK100_GBP"     # FTSE
+    "SPX500_USD",
+    "NAS100_USD",
+    "US30_USD",
+    "DE30_EUR",
+    "UK100_GBP"
 ]
 
 symbols = forex_symbols + commodities + indices
@@ -55,20 +52,25 @@ granularity_map = {
 }
 
 # ================= DATA =================
+
 def get_candles(instrument, granularity):
     url = f"{BASE_URL}/instruments/{instrument}/candles"
     params = {
         "granularity": granularity,
-        "count": 300,
+        "count": 800,   # عدد امن برای جلوگیری از rate limit
         "price": "M"
     }
+
     r = requests.get(url, headers=headers, params=params)
+
     if r.status_code != 200:
+        print(f"Error {instrument} {granularity}: {r.status_code}")
         return pd.DataFrame()
 
     data = r.json()
     candles = data.get("candles", [])
     rows = []
+
     for c in candles:
         if c.get("complete"):
             rows.append({
@@ -78,9 +80,12 @@ def get_candles(instrument, granularity):
                 "Low": float(c["mid"]["l"]),
                 "Close": float(c["mid"]["c"]),
                 "Volume": c["volume"],
-                "Symbol": instrument
+                "Symbol": instrument,
+                "Timeframe": granularity
             })
+
     return pd.DataFrame(rows)
+
 
 # ================= INSTITUTIONAL ENGINE =================
 
@@ -128,7 +133,9 @@ def volatility_regime(df):
 
 
 def session_label():
-    hour = datetime.utcnow().hour
+    now = datetime.now(timezone.utc)
+    hour = now.hour
+
     if 0 <= hour < 7:
         return "Asia"
     elif 7 <= hour < 13:
@@ -141,26 +148,30 @@ def session_label():
 # ================= FETCH =================
 
 def fetch_data():
-    print("Fetching Institutional Data...", datetime.utcnow())
+    now = datetime.now(timezone.utc)
+    print("Fetching Institutional Data...", now)
+
     all_data = []
 
     for symbol in symbols:
         for label, gran in granularity_map.items():
             try:
                 df = get_candles(symbol, gran)
+
                 if df.empty:
                     continue
 
-                df["Timeframe"] = label
-
                 bos, trend = detect_market_structure(df)
+
                 df["Structure"] = bos
                 df["Trend"] = trend
                 df["Liquidity"] = detect_liquidity(df)
-                df["Volatility Regime"] = volatility_regime(df)
+                df["Volatility_Regime"] = volatility_regime(df)
                 df["Session"] = session_label()
 
-               all_data.append(df)  # فقط آخرین کندل برای تحلیل ارشد
+                all_data.append(df)
+
+                time.sleep(0.15)  # جلوگیری از rate limit
 
             except Exception as e:
                 print(f"Error {symbol}: {e}")
@@ -169,6 +180,7 @@ def fetch_data():
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         final_df.to_csv(SAVE_FILE, index=False)
+        print("File size (KB):", round(os.path.getsize(SAVE_FILE)/1024,2))
         send_to_telegram()
     else:
         print("No data fetched.")
@@ -181,10 +193,11 @@ def send_to_telegram():
     print("Sent to Telegram")
 
 
+# ================= RUN =================
+
 fetch_data()
-schedule.every(10).minutes.do(fetch_data)
+schedule.every(15).minutes.do(fetch_data)
 
 while True:
     schedule.run_pending()
     time.sleep(5)
-
