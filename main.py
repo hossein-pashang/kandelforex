@@ -1,116 +1,117 @@
-import yfinance as yf
+import requests
 import pandas as pd
 import schedule
 import time
-import requests
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# ====== ENV VARIABLES ======
+# ===== ENV =====
+OANDA_API_KEY = os.getenv("OANDA_API_KEY")
+ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+
 SAVE_FILE = "market_data.csv"
 
-# ====== Symbols & Intervals ======
+# ===== OANDA CONFIG =====
+BASE_URL = "https://api-fxpractice.oanda.com/v3"
+
+headers = {
+    "Authorization": f"Bearer {OANDA_API_KEY}"
+}
+
 symbols = [
-    # Major Forex
-    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X",
-    "AUDUSD=X", "NZDUSD=X", "USDCAD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X",
-    # Minor Forex
-    "EURAUD=X", "EURNZD=X", "GBPCHF=X", "AUDJPY=X", "AUDNZD=X", "NZDJPY=X",
-    # Commodities
-    "GC=F", "SI=F", "CL=F",
-    # Indexes
-    "^DXY", "^GSPC", "^VIX",
-    # Crypto
-    "BTC-USD"
+    "EUR_USD","GBP_USD","USD_JPY","USD_CHF",
+    "AUD_USD","NZD_USD","USD_CAD",
+    "EUR_GBP","EUR_JPY","GBP_JPY",
+    "EURAUD","EURNZD","GBP_CHF","AUD_JPY","AUD_NZD","NZD_JPY"
 ]
 
-intervals = ["5m", "15m", "60m", "4h", "1d"]
+granularity_map = {
+    "5m": "M5",
+    "15m": "M15",
+    "1h": "H1",
+    "4h": "H4",
+    "1d": "D"
+}
 
-# ====== Market Structure Helper ======
+def get_candles(instrument, granularity):
+    url = f"{BASE_URL}/instruments/{instrument}/candles"
+    params = {
+        "granularity": granularity,
+        "count": 200,
+        "price": "M"
+    }
+    r = requests.get(url, headers=headers, params=params)
+    if r.status_code != 200:
+        return pd.DataFrame()
+    data = r.json()
+    candles = data.get("candles", [])
+    rows = []
+    for c in candles:
+        if c["complete"]:
+            rows.append({
+                "Time": c["time"],
+                "Open": float(c["mid"]["o"]),
+                "High": float(c["mid"]["h"]),
+                "Low": float(c["mid"]["l"]),
+                "Close": float(c["mid"]["c"]),
+                "Volume": c["volume"]
+            })
+    return pd.DataFrame(rows)
+
 def market_structure(df):
-    result = {}
-    if df.empty or 'High' not in df.columns or 'Low' not in df.columns:
-        result['Market Structure State'] = 'N/A'
-        result['Liquidity Sweep Flag'] = 'N/A'
-        result['Expansion / Compression'] = 'N/A'
-        return result
+    if df.empty:
+        return {"Market Structure": "N/A"}
 
-    highs = df['High']
-    lows = df['Low']
+    highs = df["High"]
+    lows = df["Low"]
 
-    # Market Structure State
-    try:
-        if highs.is_monotonic_increasing and lows.is_monotonic_increasing:
-            result['Market Structure State'] = 'Uptrend'
-        elif highs.is_monotonic_decreasing and lows.is_monotonic_decreasing:
-            result['Market Structure State'] = 'Downtrend'
-        else:
-            result['Market Structure State'] = 'Sideways'
-    except:
-        result['Market Structure State'] = 'N/A'
+    if highs.is_monotonic_increasing and lows.is_monotonic_increasing:
+        state = "Uptrend"
+    elif highs.is_monotonic_decreasing and lows.is_monotonic_decreasing:
+        state = "Downtrend"
+    else:
+        state = "Sideways"
 
-    # Simple Liquidity Sweep Example
-    try:
-        result['Liquidity Sweep Flag'] = 'Yes' if highs.iloc[-1] > highs.max() else 'No'
-    except:
-        result['Liquidity Sweep Flag'] = 'N/A'
+    return {"Market Structure": state}
 
-    # Expansion / Compression (Volatility)
-    try:
-        result['Expansion / Compression'] = 'Expansion' if highs.std() > lows.std() else 'Compression'
-    except:
-        result['Expansion / Compression'] = 'N/A'
-
-    return result
-
-# ====== Fetch & Process Data ======
 def fetch_data():
-    print(f"Fetching market data... {datetime.now()}")
+    print("Fetching OANDA data...", datetime.now())
     all_data = []
 
-    start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-
     for symbol in symbols:
-        for interval in intervals:
+        for label, gran in granularity_map.items():
             try:
-                df = yf.download(symbol, start=start_date, interval=interval, progress=False)
+                df = get_candles(symbol, gran)
                 if df.empty:
                     continue
-                df.reset_index(inplace=True)
-                df['Symbol'] = symbol
-                df['Interval'] = interval
 
-                # Market structure info
-                ms_info = market_structure(df)
-                for k, v in ms_info.items():
-                    df[k] = v
+                df["Symbol"] = symbol
+                df["Timeframe"] = label
+
+                ms = market_structure(df)
+                df["Market Structure"] = ms["Market Structure"]
 
                 all_data.append(df)
+
             except Exception as e:
-                print(f"Error fetching {symbol} {interval}: {e}")
-                continue
+                print("Error:", e)
 
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         final_df.to_csv(SAVE_FILE, index=False)
         send_to_telegram()
     else:
-        print("No data fetched this round.")
+        print("No data fetched.")
 
-# ====== Send CSV to Telegram ======
 def send_to_telegram():
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-        with open(SAVE_FILE, "rb") as f:
-            requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
-        print("File sent to Telegram")
-    except Exception as e:
-        print(f"Error sending file: {e}")
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    with open(SAVE_FILE, "rb") as f:
+        requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
+    print("Sent to Telegram")
 
-# ====== Scheduler ======
-fetch_data()  # Run once immediately
+fetch_data()
 schedule.every(10).minutes.do(fetch_data)
 
 while True:
