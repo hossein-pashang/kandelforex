@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 
 SAVE_FILE = "market_data.csv"
 BASE_URL = "https://api-fxpractice.oanda.com/v3"
@@ -57,7 +58,7 @@ def get_candles(instrument, granularity):
     url = f"{BASE_URL}/instruments/{instrument}/candles"
     params = {
         "granularity": granularity,
-        "count": 800,   # عدد امن برای جلوگیری از rate limit
+        "count": 800,
         "price": "M"
     }
 
@@ -86,6 +87,37 @@ def get_candles(instrument, granularity):
 
     return pd.DataFrame(rows)
 
+# ================= LIVE PRICING =================
+
+def get_live_prices(instruments):
+    url = f"{BASE_URL}/accounts/{ACCOUNT_ID}/pricing"
+
+    params = {
+        "instruments": ",".join(instruments)
+    }
+
+    r = requests.get(url, headers=headers, params=params)
+
+    if r.status_code != 200:
+        print("Pricing Error:", r.status_code)
+        return {}
+
+    data = r.json()
+    prices = {}
+
+    for p in data.get("prices", []):
+        symbol = p["instrument"]
+        bid = float(p["bids"][0]["price"])
+        ask = float(p["asks"][0]["price"])
+        mid = (bid + ask) / 2
+
+        prices[symbol] = {
+            "Bid": bid,
+            "Ask": ask,
+            "Mid": mid
+        }
+
+    return prices
 
 # ================= INSTITUTIONAL ENGINE =================
 
@@ -95,7 +127,6 @@ def calculate_atr(df, period=14):
     low_close = np.abs(df["Low"] - df["Close"].shift())
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     return tr.rolling(period).mean()
-
 
 def detect_market_structure(df):
     if len(df) < 20:
@@ -113,7 +144,6 @@ def detect_market_structure(df):
     else:
         return "No BOS", "Range"
 
-
 def detect_liquidity(df):
     highs = df["High"].round(4)
     lows = df["Low"].round(4)
@@ -124,13 +154,11 @@ def detect_liquidity(df):
         return "Equal Low Liquidity"
     return "No Clear Liquidity"
 
-
 def volatility_regime(df):
-    df["ATR"] = calculate_atr(df)
-    if df["ATR"].iloc[-1] > df["ATR"].mean():
+    atr = calculate_atr(df)
+    if atr.iloc[-1] > atr.mean():
         return "High Volatility"
     return "Low Volatility"
-
 
 def session_label():
     now = datetime.now(timezone.utc)
@@ -143,7 +171,6 @@ def session_label():
     elif 13 <= hour < 22:
         return "New York"
     return "After Hours"
-
 
 # ================= FETCH =================
 
@@ -171,7 +198,7 @@ def fetch_data():
 
                 all_data.append(df)
 
-                time.sleep(0.15)  # جلوگیری از rate limit
+                time.sleep(0.15)
 
             except Exception as e:
                 print(f"Error {symbol}: {e}")
@@ -179,19 +206,29 @@ def fetch_data():
 
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
+
+        # ===== GET LIVE PRICES =====
+        live_prices = get_live_prices(symbols)
+
+        for symbol in live_prices:
+            mask = final_df["Symbol"] == symbol
+            if mask.any():
+                last_index = final_df[mask].index[-1]
+                final_df.loc[last_index, "Live_Bid"] = live_prices[symbol]["Bid"]
+                final_df.loc[last_index, "Live_Ask"] = live_prices[symbol]["Ask"]
+                final_df.loc[last_index, "Live_Mid"] = live_prices[symbol]["Mid"]
+
         final_df.to_csv(SAVE_FILE, index=False)
         print("File size (KB):", round(os.path.getsize(SAVE_FILE)/1024,2))
         send_to_telegram()
     else:
         print("No data fetched.")
 
-
 def send_to_telegram():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     with open(SAVE_FILE, "rb") as f:
         requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
     print("Sent to Telegram")
-
 
 # ================= RUN =================
 
