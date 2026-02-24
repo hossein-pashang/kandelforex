@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 # ================= ENV =================
-OANDA_API_KEY = os.getenv("156cfd275691cddf1ae9abca4378f544-1372068a45acd548a0ca1d6b9f483293")
+OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 ACCOUNT_ID = os.getenv("ACCOUNT_ID")
@@ -128,6 +128,7 @@ def volatility_regime(df):
     if atr.iloc[-1] > atr.mean():
         return "High Volatility"
     return "Low Volatility"
+
 def session_label():
     now = datetime.now(timezone.utc)
     hour = now.hour
@@ -190,5 +191,3 @@ schedule.every(10).minutes.do(fetch_data)
 while True:
     schedule.run_pending()
     time.sleep(5)
-
-
