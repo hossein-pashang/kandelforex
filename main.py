@@ -1,4 +1,3 @@
-Ali Pashang Rad, [2/24/2026 1:26 PM]
 import requests
 import pandas as pd
 import numpy as np
@@ -193,3 +192,4 @@ schedule.every(10).minutes.do(fetch_data)
 while True:
     schedule.run_pending()
     time.sleep(5)
+
