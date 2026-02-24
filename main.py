@@ -15,13 +15,26 @@ HEADERS = {
 }
 
 # ===============================
-# PROFESSIONAL FETCH FUNCTION
+# HELPER
 # ===============================
-def fetch_candles(instrument, granularity="M5", days=7,
-                  max_retries=5, max_delay_minutes=15):
+def get_minutes(granularity):
+    mapping = {
+        "M1": 1,
+        "M5": 5,
+        "M15": 15,
+        "M30": 30,
+        "H1": 60,
+        "H4": 240,
+        "D": 1440
+    }
+    return mapping.get(granularity, 5)
+
+# ===============================
+# FETCH FUNCTION (STABLE VERSION)
+# ===============================
+def fetch_candles(instrument, granularity="M5", days=7, max_retries=3):
 
     for attempt in range(max_retries):
-
         try:
             end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(days=days)
@@ -49,7 +62,6 @@ def fetch_candles(instrument, granularity="M5", days=7,
                 time.sleep(2)
                 continue
 
-            # فقط کندل کامل
             candles = [c for c in data["candles"] if c["complete"]]
 
             if len(candles) == 0:
@@ -71,31 +83,21 @@ def fetch_candles(instrument, granularity="M5", days=7,
             df.sort_index(inplace=True)
 
             # ===============================
-            # CHECK DATA FRESHNESS
+            # CHECK DELAY (LENIENT MODE)
             # ===============================
             last_candle_time = df.index[-1]
             now = datetime.now(timezone.utc)
             delay = (now - last_candle_time).total_seconds() / 60
 
-            print(f"[{instrument}] Last candle: {last_candle_time}")
-            print(f"[{instrument}] Delay: {delay:.2f} minutes")
+            if delay > 120:
+                print(f"[{instrument}] ❌ Data too old ({delay:.1f} min)")
+                return None
+            elif delay > 10:
+                print(f"[{instrument}] ⚠ Delay {delay:.1f} min - Acceptable")
+            else:
+                print(f"[{instrument}] Fresh ({delay:.1f} min)")
 
-            if delay > max_delay_minutes:
-                print(f"[{instrument}] ⚠ Data delayed. Retrying...")
-                time.sleep(2)
-                continue
-
-            # ===============================
-            # CHECK DATA LENGTH
-            # ===============================
-            expected_rows = int((days * 24 * 60) / get_minutes(granularity))
-
-            if len(df) < expected_rows * 0.7:  # حداقل 70٪ دیتای مورد انتظار
-                print(f"[{instrument}] ⚠ Not enough candles")
-                time.sleep(2)
-                continue
-
-            print(f"[{instrument}] ✅ Data OK ({len(df)} candles)")
+            print(f"[{instrument}] ✅ OK ({len(df)} candles)")
             return df
 
         except Exception as e:
@@ -107,23 +109,7 @@ def fetch_candles(instrument, granularity="M5", days=7,
 
 
 # ===============================
-# HELPER
-# ===============================
-def get_minutes(granularity):
-    mapping = {
-        "M1": 1,
-        "M5": 5,
-        "M15": 15,
-        "M30": 30,
-        "H1": 60,
-        "H4": 240,
-        "D": 1440
-    }
-    return mapping.get(granularity, 5)
-
-
-# ===============================
-# RUN
+# MAIN
 # ===============================
 if __name__ == "__main__":
 
@@ -138,10 +124,12 @@ if __name__ == "__main__":
     all_data = {}
 
     for instrument in instruments:
-        print("\n============================")
+        print("\n==============================")
         df = fetch_candles(instrument, granularity="M5", days=7)
 
         if df is not None:
             all_data[instrument] = df
         else:
-            print(f"Skipping {instrument} due to data issue")
+            print(f"[{instrument}] Skipped but system continues")
+
+    print("\nFinished fetching all instruments.")
