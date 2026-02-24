@@ -128,8 +128,6 @@ def volatility_regime(df):
     if atr.iloc[-1] > atr.mean():
         return "High Volatility"
     return "Low Volatility"
-
-Ali Pashang Rad, [2/24/2026 1:26 PM]
 def session_label():
     now = datetime.now(timezone.utc)
     hour = now.hour
@@ -192,4 +190,5 @@ schedule.every(10).minutes.do(fetch_data)
 while True:
     schedule.run_pending()
     time.sleep(5)
+
 
