@@ -4,111 +4,79 @@ import numpy as np
 import schedule
 import time
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 # ================= ENV =================
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+OANDA_API_KEY = os.getenv("OANDA_API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 
 SAVE_FILE = "market_data.csv"
+BASE_URL = "https://api-fxpractice.oanda.com/v3"
+
+headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
 
 # ================= SYMBOLS =================
 forex_symbols = [
-    "EURUSD","GBPUSD","USDJPY","USDCHF",
-    "AUDUSD","NZDUSD","USDCAD",
-    "EURGBP","EURJPY","GBPJPY",
-    "EURAUD","EURNZD","GBPCHF",
-    "AUDJPY","AUDNZD","NZDJPY"
+    "EUR_USD","GBP_USD","USD_JPY","USD_CHF",
+    "AUD_USD","NZD_USD","USD_CAD","EUR_GBP",
+    "EUR_JPY","GBP_JPY","EUR_AUD","EUR_NZD","GBP_CHF",
+    "AUD_JPY","AUD_NZD","NZD_JPY"
 ]
 
-commodities = [
-    "XAUUSD",  # Gold
-    "XAGUSD",  # Silver
-    "BCOUSD"   # Brent Oil
-]
+commodities = ["XAU_USD","XAG_USD","BCO_USD"]
+indices = ["SPX500_USD","NAS100_USD","US30_USD","DE30_EUR","UK100_GBP"]
 
-indices = [
-    "SPX",     # S&P500
-    "NAS100",  # Nasdaq
-    "DJI",     # Dow Jones
-    "DAX",     # Germany DAX
-    "FTSE"     # UK FTSE
-]
+symbols = forex_symbols + commodities + indices
 
-dollar_index = ["DXY"]
+usd_pairs_for_strength = ["EUR_USD","GBP_USD","AUD_USD","NZD_USD","USD_JPY","USD_CHF","USD_CAD"]
 
-symbols = forex_symbols + commodities + indices + dollar_index
+granularity_map = {"5m":"M5","15m":"M15","1h":"H1","1d":"D"}
 
-granularity_map = {
-    "5m": 5,
-    "15m": 15,
-    "1h": 60,
-    "4h": 240,
-    "1d": 1440
-}
-
-# ================= DATA =================
-
-def get_finnhub_candles(symbol, minutes):
-    """دیتای کندل Finnhub برای یک هفته اخیر"""
-    now = int(datetime.now(timezone.utc).timestamp())
-    week_ago = int((datetime.now(timezone.utc) - timedelta(days=7)).timestamp())
-
-    resolution = str(minutes) if minutes < 60 else str(minutes // 60 * 60)
-    url = f"https://finnhub.io/api/v1/forex/candle" if symbol in forex_symbols else f"https://finnhub.io/api/v1/forex/candle"
-    
-    # Finnhub endpoint متفاوت برای شاخص دلار و شاخص ها
-    if symbol in indices + dollar_index + commodities:
-        url = f"https://finnhub.io/api/v1/forex/candle"
-
-    params = {
-        "symbol": symbol,
-        "resolution": str(minutes),
-        "from": week_ago,
-        "to": now,
-        "token": FINNHUB_API_KEY
-    }
-
-    r = requests.get(url, params=params)
+# ================= DATA FUNCTIONS =================
+def get_candles(instrument, granularity, count=200):
+    url = f"{BASE_URL}/instruments/{instrument}/candles"
+    params = {"granularity": granularity, "count": count, "price":"M"}
+    r = requests.get(url, headers=headers, params=params)
     if r.status_code != 200:
-        print(f"Finnhub Error {symbol}:", r.status_code)
+        print(f"Error {instrument} {granularity}: {r.status_code}")
         return pd.DataFrame()
-
     data = r.json()
-    if data.get("s") != "ok":
-        return pd.DataFrame()
+    candles = data.get("candles", [])
+    rows = []
+    for c in candles:
+        if c.get("complete"):
+            rows.append({
+                "Time": c["time"],
+                "Open": float(c["mid"]["o"]),
+                "High": float(c["mid"]["h"]),
+                "Low": float(c["mid"]["l"]),
+                "Close": float(c["mid"]["c"]),
+                "Volume": c["volume"],
+                "Symbol": instrument,
+                "Timeframe": granularity
+            })
+    return pd.DataFrame(rows)
 
-    df = pd.DataFrame({
-        "Time": pd.to_datetime(data["t"], unit="s"),
-        "Open": data["o"],
-        "High": data["h"],
-        "Low": data["l"],
-        "Close": data["c"],
-        "Volume": data.get("v", [0]*len(data["t"])),
-        "Symbol": symbol
-    })
-    return df
-
-def get_live_prices(symbols):
-    """قیمت زنده Mid/Bid/Ask"""
+def get_live_prices(instruments):
+    url = f"{BASE_URL}/accounts/{ACCOUNT_ID}/pricing"
+    params = {"instruments": ",".join(instruments)}
+    r = requests.get(url, headers=headers, params=params)
+    if r.status_code != 200:
+        print("Pricing Error:", r.status_code)
+        return {}
+    data = r.json()
     prices = {}
-    for symbol in symbols:
-        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-        r = requests.get(url)
-        if r.status_code != 200:
-            print(f"Finnhub Error: {r.status_code} {symbol}")
-            continue
-        data = r.json()
-        prices[symbol] = {
-            "Live_Bid": data.get("pc", None),  # previous close as approximation
-            "Live_Ask": data.get("c", None),
-            "Live_Mid": data.get("c", None)
-        }
+    for p in data.get("prices", []):
+        symbol = p["instrument"]
+        bid = float(p["bids"][0]["price"])
+        ask = float(p["asks"][0]["price"])
+        mid = (bid + ask) / 2
+        prices[symbol] = {"Bid": bid, "Ask": ask, "Mid": mid}
     return prices
 
 # ================= INSTITUTIONAL ENGINE =================
-
 def calculate_atr(df, period=14):
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
@@ -117,81 +85,96 @@ def calculate_atr(df, period=14):
     return tr.rolling(period).mean()
 
 def detect_market_structure(df):
-    if len(df) < 20:
-        return "N/A", "N/A"
+    if len(df)<20: return "N/A","N/A"
     recent_high = df["High"].iloc[-1]
     prev_high = df["High"].iloc[-20:-1].max()
     recent_low = df["Low"].iloc[-1]
     prev_low = df["Low"].iloc[-20:-1].min()
-    if recent_high > prev_high:
-        return "Bullish BOS", "Uptrend"
-    elif recent_low < prev_low:
-        return "Bearish BOS", "Downtrend"
-    else:
-        return "No BOS", "Range"
+    if recent_high>prev_high: return "Bullish BOS","Uptrend"
+    elif recent_low<prev_low: return "Bearish BOS","Downtrend"
+    else: return "No BOS","Range"
 
 def detect_liquidity(df):
     highs = df["High"].round(4)
     lows = df["Low"].round(4)
-    if highs.duplicated().any():
-        return "Equal High Liquidity"
-    if lows.duplicated().any():
-        return "Equal Low Liquidity"
+    if highs.duplicated().any(): return "Equal High Liquidity"
+    if lows.duplicated().any(): return "Equal Low Liquidity"
     return "No Clear Liquidity"
 
 def volatility_regime(df):
     atr = calculate_atr(df)
-    if atr.iloc[-1] > atr.mean():
-        return "High Volatility"
+    if atr.iloc[-1]>atr.mean(): return "High Volatility"
     return "Low Volatility"
 
 def session_label():
     now = datetime.now(timezone.utc)
     hour = now.hour
-    if 0 <= hour < 7:
-        return "Asia"
-    elif 7 <= hour < 13:
-        return "London"
-    elif 13 <= hour < 22:
-        return "New York"
+    if 0<=hour<7: return "Asia"
+    elif 7<=hour<13: return "London"
+    elif 13<=hour<22: return "New York"
     return "After Hours"
 
-# ================= FETCH =================
+# ================= USD STRENGTH =================
+def calculate_usd_strength(df_dict):
+    # df_dict: {pair: df} آخرین کندل
+    strength = {}
+    for tf in granularity_map.keys():
+        score = 0
+        count = 0
+        for pair in usd_pairs_for_strength:
+            df = df_dict.get(pair)
+            if df is None or df.empty: continue
+            last = df[df["Timeframe"]==tf].iloc[-1]
+            change = (last["Close"] - last["Open"])/last["Open"]
+            # استاندارد: اگر USD سمت راست است برعکس
+            if pair.startswith("USD_"):
+                change *= -1
+            score += change
+            count += 1
+        strength[tf] = score/count if count>0 else 0
+    return strength
 
+# ================= FETCH =================
 def fetch_data():
     now = datetime.now(timezone.utc)
     print("Fetching Data...", now)
-
     all_data = []
+    df_dict = {}
 
     for symbol in symbols:
-        for label, minutes in granularity_map.items():
-            df = get_finnhub_candles(symbol, minutes)
-            if df.empty:
+        for label, gran in granularity_map.items():
+            try:
+                df = get_candles(symbol, gran)
+                if df.empty: continue
+                bos, trend = detect_market_structure(df)
+                df["Structure"] = bos
+                df["Trend"] = trend
+                df["Liquidity"] = detect_liquidity(df)
+                df["Volatility_Regime"] = volatility_regime(df)
+                df["Session"] = session_label()
+                all_data.append(df)
+                df_dict[symbol] = df
+                time.sleep(0.15)
+            except Exception as e:
+                print(f"Error {symbol}: {e}")
                 continue
-            bos, trend = detect_market_structure(df)
-            df["Structure"] = bos
-            df["Trend"] = trend
-            df["Liquidity"] = detect_liquidity(df)
-            df["Volatility_Regime"] = volatility_regime(df)
-            df["Session"] = session_label()
-            df["Timeframe"] = label
-            all_data.append(df)
-            time.sleep(0.1)
 
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
-        # ===== GET LIVE PRICES =====
+        # قیمت زنده
         live_prices = get_live_prices(symbols)
         for symbol in live_prices:
-            mask = final_df["Symbol"] == symbol
+            mask = final_df["Symbol"]==symbol
             if mask.any():
                 last_index = final_df[mask].index[-1]
-                final_df.loc[last_index, "Live_Bid"] = live_prices[symbol]["Live_Bid"]
-                final_df.loc[last_index, "Live_Ask"] = live_prices[symbol]["Live_Ask"]
-                final_df.loc[last_index, "Live_Mid"] = live_prices[symbol]["Live_Mid"]
-
-        final_df.to_csv(SAVE_FILE, index=False)
+                final_df.loc[last_index,"Live_Bid"] = live_prices[symbol]["Bid"]
+                final_df.loc[last_index,"Live_Ask"] = live_prices[symbol]["Ask"]
+                final_df.loc[last_index,"Live_Mid"] = live_prices[symbol]["Mid"]
+        # شاخص دلار
+        usd_strength = calculate_usd_strength(df_dict)
+        for tf, score in usd_strength.items():
+            final_df.loc[final_df["Timeframe"]==tf,"USD_Strength"] = score
+        final_df.to_csv(SAVE_FILE,index=False)
         print("File size (KB):", round(os.path.getsize(SAVE_FILE)/1024,2))
         send_to_telegram()
     else:
@@ -199,15 +182,13 @@ def fetch_data():
 
 def send_to_telegram():
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
-    with open(SAVE_FILE, "rb") as f:
-        requests.post(url, data={"chat_id": CHAT_ID}, files={"document": f})
+    with open(SAVE_FILE,"rb") as f:
+        requests.post(url,data={"chat_id":CHAT_ID},files={"document":f})
     print("Sent to Telegram")
 
 # ================= RUN =================
-
 fetch_data()
 schedule.every(10).minutes.do(fetch_data)
-
 while True:
     schedule.run_pending()
     time.sleep(5)
