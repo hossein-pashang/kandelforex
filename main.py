@@ -4,13 +4,13 @@ import numpy as np
 import schedule
 import time
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ================= ENV =================
 OANDA_API_KEY = os.getenv("OANDA_API_KEY")
+ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 
 SAVE_FILE = "market_data.csv"
 BASE_URL = "https://api-fxpractice.oanda.com/v3"
@@ -28,19 +28,8 @@ forex_symbols = [
     "AUD_JPY","AUD_NZD","NZD_JPY"
 ]
 
-commodities = [
-    "XAU_USD",
-    "XAG_USD",
-    "BCO_USD"
-]
-
-indices = [
-    "SPX500_USD",
-    "NAS100_USD",
-    "US30_USD",
-    "DE30_EUR",
-    "UK100_GBP"
-]
+commodities = ["XAU_USD","XAG_USD","BCO_USD"]
+indices = ["SPX500_USD","NAS100_USD","US30_USD","DE30_EUR","UK100_GBP"]
 
 symbols = forex_symbols + commodities + indices
 
@@ -51,54 +40,62 @@ granularity_map = {
     "1d": "D"
 }
 
-# ================= DATA =================
+# ================= DATA FETCH =================
 
-def get_candles(instrument, granularity, count=500):
+def get_candles(instrument, granularity, count=1000):
     url = f"{BASE_URL}/instruments/{instrument}/candles"
     params = {
         "granularity": granularity,
         "count": count,
         "price": "M"
     }
-    r = requests.get(url, headers=headers, params=params)
-    if r.status_code != 200:
-        print(f"Error {instrument} {granularity}: {r.status_code}")
+    try:
+        r = requests.get(url, headers=headers, params=params)
+        if r.status_code != 200:
+            print(f"Error {instrument} {granularity}: {r.status_code}")
+            return pd.DataFrame()
+        data = r.json()
+        candles = data.get("candles", [])
+        rows = []
+        for c in candles:
+            if c.get("complete", False):
+                rows.append({
+                    "Time": c["time"],
+                    "Open": float(c["mid"]["o"]),
+                    "High": float(c["mid"]["h"]),
+                    "Low": float(c["mid"]["l"]),
+                    "Close": float(c["mid"]["c"]),
+                    "Volume": c["volume"],
+                    "Symbol": instrument,
+                    "Timeframe": granularity
+                })
+        return pd.DataFrame(rows)
+    except Exception as e:
+        print(f"Exception {instrument} {granularity}: {e}")
         return pd.DataFrame()
-    data = r.json()
-    candles = data.get("candles", [])
-    rows = []
-    for c in candles:
-        if c.get("complete"):
-            rows.append({
-                "Time": c["time"],
-                "Open": float(c["mid"]["o"]),
-                "High": float(c["mid"]["h"]),
-                "Low": float(c["mid"]["l"]),
-                "Close": float(c["mid"]["c"]),
-                "Volume": c["volume"],
-                "Symbol": instrument,
-                "Timeframe": granularity
-            })
-    return pd.DataFrame(rows)
 
 def get_live_prices(instruments):
     url = f"{BASE_URL}/accounts/{ACCOUNT_ID}/pricing"
     params = {"instruments": ",".join(instruments)}
-    r = requests.get(url, headers=headers, params=params)
-    if r.status_code != 200:
-        print("Pricing Error:", r.status_code)
+    try:
+        r = requests.get(url, headers=headers, params=params)
+        if r.status_code != 200:
+            print("Pricing Error:", r.status_code)
+            return {}
+        data = r.json()
+        prices = {}
+        for p in data.get("prices", []):
+            symbol = p["instrument"]
+            bid = float(p["bids"][0]["price"])
+            ask = float(p["asks"][0]["price"])
+            mid = (bid + ask)/2
+            prices[symbol] = {"Bid": bid, "Ask": ask, "Mid": mid}
+        return prices
+    except Exception as e:
+        print("Pricing Exception:", e)
         return {}
-    data = r.json()
-    prices = {}
-    for p in data.get("prices", []):
-        symbol = p["instrument"]
-        bid = float(p["bids"][0]["price"])
-        ask = float(p["asks"][0]["price"])
-        mid = (bid + ask) / 2
-        prices[symbol] = {"Bid": bid, "Ask": ask, "Mid": mid}
-    return prices
 
-# ================= ENGINE =================
+# ================= INSTITUTIONAL ENGINE =================
 
 def calculate_atr(df, period=14):
     high_low = df["High"] - df["Low"]
@@ -141,70 +138,44 @@ def volatility_regime(df):
 def session_label():
     now = datetime.now(timezone.utc)
     hour = now.hour
-    if 0 <= hour < 7:
-        return "Asia"
-    elif 7 <= hour < 13:
-        return "London"
-    elif 13 <= hour < 22:
-        return "New York"
+    if 0 <= hour < 7: return "Asia"
+    elif 7 <= hour < 13: return "London"
+    elif 13 <= hour < 22: return "New York"
     return "After Hours"
 
-def calculate_usd_strength(df_dict):
-    usd_pairs = [s for s in df_dict if "USD" in s]
-    strength = {}
-    for tf in ["M5","M15","H1"]:
-        try:
-            vals = []
-            for sym in usd_pairs:
-                df = df_dict[sym]
-                last = df[df["Timeframe"]==tf].iloc[-1]
-                mid = (last["High"]+last["Low"])/2
-                if sym.startswith("USD_"):
-                    vals.append(mid)
-                elif sym.endswith("_USD"):
-                    vals.append(-mid)
-            strength[tf] = sum(vals)
-        except Exception:
-            strength[tf] = np.nan
-    return strength
-
-# ================= FETCH =================
+# ================= FETCH & SAVE =================
 
 def fetch_data():
-    now = datetime.now(timezone.utc)
-    print("Fetching Data...", now)
+    print("Fetching Data...", datetime.now(timezone.utc))
     all_data = []
-    df_dict = {}
+
     for symbol in symbols:
         for label, gran in granularity_map.items():
-            df = get_candles(symbol, gran)
+            df = get_candles(symbol, gran, count=1000)
             if df.empty:
                 continue
             bos, trend = detect_market_structure(df)
-            # اضافه کردن ستون‌ها به طول DataFrame
-            df["Structure"] = [bos]*len(df)
-            df["Trend"] = [trend]*len(df)
-            df["Liquidity"] = [detect_liquidity(df)]*len(df)
-            df["Volatility_Regime"] = [volatility_regime(df)]*len(df)
-            df["Session"] = [session_label()]*len(df)
+            df["Structure"] = bos
+            df["Trend"] = trend
+            df["Liquidity"] = detect_liquidity(df)
+            df["Volatility_Regime"] = volatility_regime(df)
+            df["Session"] = session_label()
             all_data.append(df)
-            df_dict[symbol] = df
             time.sleep(0.15)
+
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
-        # قیمت زنده
+
+        # ===== GET LIVE PRICES =====
         live_prices = get_live_prices(symbols)
         for symbol in live_prices:
-            mask = final_df["Symbol"]==symbol
+            mask = final_df["Symbol"] == symbol
             if mask.any():
-                last_idx = final_df[mask].index[-1]
-                final_df.loc[last_idx, "Live_Bid"] = live_prices[symbol]["Bid"]
-                final_df.loc[last_idx, "Live_Ask"] = live_prices[symbol]["Ask"]
-                final_df.loc[last_idx, "Live_Mid"] = live_prices[symbol]["Mid"]
-        # شاخص دلار مصنوعی
-        usd_strength = calculate_usd_strength(df_dict)
-        for tf in usd_strength:
-            final_df[f"USD_Strength_{tf}"] = usd_strength[tf]
+                last_index = final_df[mask].index[-1]
+                final_df.loc[last_index, "Live_Bid"] = live_prices[symbol]["Bid"]
+                final_df.loc[last_index, "Live_Ask"] = live_prices[symbol]["Ask"]
+                final_df.loc[last_index, "Live_Mid"] = live_prices[symbol]["Mid"]
+
         final_df.to_csv(SAVE_FILE, index=False)
         print("File size (KB):", round(os.path.getsize(SAVE_FILE)/1024,2))
         send_to_telegram()
