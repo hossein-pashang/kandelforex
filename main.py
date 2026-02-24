@@ -15,37 +15,56 @@ ACCOUNT_ID = os.getenv("ACCOUNT_ID")
 SAVE_FILE = "market_data.csv"
 BASE_URL = "https://api-fxpractice.oanda.com/v3"
 
-headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
+headers = {
+    "Authorization": f"Bearer {OANDA_API_KEY}"
+}
 
 # ================= SYMBOLS =================
 forex_symbols = [
     "EUR_USD","GBP_USD","USD_JPY","USD_CHF",
-    "AUD_USD","NZD_USD","USD_CAD","EUR_GBP",
-    "EUR_JPY","GBP_JPY","EUR_AUD","EUR_NZD","GBP_CHF",
+    "AUD_USD","NZD_USD","USD_CAD",
+    "EUR_GBP","EUR_JPY","GBP_JPY",
+    "EUR_AUD","EUR_NZD","GBP_CHF",
     "AUD_JPY","AUD_NZD","NZD_JPY"
 ]
 
-commodities = ["XAU_USD","XAG_USD","BCO_USD"]
-indices = ["SPX500_USD","NAS100_USD","US30_USD","DE30_EUR","UK100_GBP"]
+commodities = [
+    "XAU_USD","XAG_USD","BCO_USD"
+]
+
+indices = [
+    "SPX500_USD","NAS100_USD","US30_USD","DE30_EUR","UK100_GBP"
+]
 
 symbols = forex_symbols + commodities + indices
 
-usd_pairs_for_strength = ["EUR_USD","GBP_USD","AUD_USD","NZD_USD","USD_JPY","USD_CHF","USD_CAD"]
+granularity_map = {
+    "5m": "M5",
+    "15m": "M15",
+    "1h": "H1",
+    "1d": "D"
+}
 
-granularity_map = {"5m":"M5","15m":"M15","1h":"H1","1d":"D"}
+usd_pairs_for_strength = [
+    "EUR_USD","GBP_USD","USD_JPY","USD_CHF","AUD_USD","NZD_USD","USD_CAD"
+]
 
-# ================= DATA FUNCTIONS =================
-def get_candles(instrument, granularity, count=200):
+# ================= DATA =================
+def get_candles(instrument, granularity):
     url = f"{BASE_URL}/instruments/{instrument}/candles"
-    params = {"granularity": granularity, "count": count, "price":"M"}
+    params = {
+        "granularity": granularity,
+        "count": 800,
+        "price": "M"
+    }
     r = requests.get(url, headers=headers, params=params)
     if r.status_code != 200:
         print(f"Error {instrument} {granularity}: {r.status_code}")
         return pd.DataFrame()
+
     data = r.json()
-    candles = data.get("candles", [])
     rows = []
-    for c in candles:
+    for c in data.get("candles", []):
         if c.get("complete"):
             rows.append({
                 "Time": c["time"],
@@ -59,6 +78,7 @@ def get_candles(instrument, granularity, count=200):
             })
     return pd.DataFrame(rows)
 
+# ================= LIVE PRICING =================
 def get_live_prices(instruments):
     url = f"{BASE_URL}/accounts/{ACCOUNT_ID}/pricing"
     params = {"instruments": ",".join(instruments)}
@@ -66,14 +86,12 @@ def get_live_prices(instruments):
     if r.status_code != 200:
         print("Pricing Error:", r.status_code)
         return {}
-    data = r.json()
     prices = {}
-    for p in data.get("prices", []):
-        symbol = p["instrument"]
+    for p in r.json().get("prices", []):
         bid = float(p["bids"][0]["price"])
         ask = float(p["asks"][0]["price"])
-        mid = (bid + ask) / 2
-        prices[symbol] = {"Bid": bid, "Ask": ask, "Mid": mid}
+        mid = (bid + ask)/2
+        prices[p["instrument"]] = {"Bid": bid, "Ask": ask, "Mid": mid}
     return prices
 
 # ================= INSTITUTIONAL ENGINE =================
@@ -114,9 +132,7 @@ def session_label():
     elif 13<=hour<22: return "New York"
     return "After Hours"
 
-# ================= USD STRENGTH =================
 def calculate_usd_strength(df_dict):
-    # df_dict: {pair: df} آخرین کندل
     strength = {}
     for tf in granularity_map.keys():
         score = 0
@@ -124,13 +140,13 @@ def calculate_usd_strength(df_dict):
         for pair in usd_pairs_for_strength:
             df = df_dict.get(pair)
             if df is None or df.empty: continue
-            last = df[df["Timeframe"]==tf].iloc[-1]
-            change = (last["Close"] - last["Open"])/last["Open"]
-            # استاندارد: اگر USD سمت راست است برعکس
-            if pair.startswith("USD_"):
-                change *= -1
-            score += change
-            count += 1
+            df_tf = df[df["Timeframe"]==tf]
+            if df_tf.empty: continue
+            last = df_tf.iloc[-1]
+            change = (last["Close"]-last["Open"])/last["Open"]
+            if pair.startswith("USD_"): change*=-1
+            score+=change
+            count+=1
         strength[tf] = score/count if count>0 else 0
     return strength
 
@@ -138,17 +154,15 @@ def calculate_usd_strength(df_dict):
 def fetch_data():
     now = datetime.now(timezone.utc)
     print("Fetching Data...", now)
-    all_data = []
-    df_dict = {}
+    all_data=[]
+    df_dict={}
 
     for symbol in symbols:
         for label, gran in granularity_map.items():
             try:
                 df = get_candles(symbol, gran)
                 if df.empty: continue
-                bos, trend = detect_market_structure(df)
-                df["Structure"] = bos
-                df["Trend"] = trend
+                df["Structure"], df["Trend"] = detect_market_structure(df), detect_market_structure(df)[1]
                 df["Liquidity"] = detect_liquidity(df)
                 df["Volatility_Regime"] = volatility_regime(df)
                 df["Session"] = session_label()
@@ -161,19 +175,19 @@ def fetch_data():
 
     if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
-        # قیمت زنده
         live_prices = get_live_prices(symbols)
         for symbol in live_prices:
             mask = final_df["Symbol"]==symbol
             if mask.any():
                 last_index = final_df[mask].index[-1]
-                final_df.loc[last_index,"Live_Bid"] = live_prices[symbol]["Bid"]
-                final_df.loc[last_index,"Live_Ask"] = live_prices[symbol]["Ask"]
-                final_df.loc[last_index,"Live_Mid"] = live_prices[symbol]["Mid"]
-        # شاخص دلار
+                final_df.loc[last_index,"Live_Bid"]=live_prices[symbol]["Bid"]
+                final_df.loc[last_index,"Live_Ask"]=live_prices[symbol]["Ask"]
+                final_df.loc[last_index,"Live_Mid"]=live_prices[symbol]["Mid"]
+
         usd_strength = calculate_usd_strength(df_dict)
-        for tf, score in usd_strength.items():
-            final_df.loc[final_df["Timeframe"]==tf,"USD_Strength"] = score
+        for tf,val in usd_strength.items():
+            final_df[f"USD_Strength_{tf}"]=val
+
         final_df.to_csv(SAVE_FILE,index=False)
         print("File size (KB):", round(os.path.getsize(SAVE_FILE)/1024,2))
         send_to_telegram()
@@ -181,7 +195,7 @@ def fetch_data():
         print("No data fetched.")
 
 def send_to_telegram():
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
     with open(SAVE_FILE,"rb") as f:
         requests.post(url,data={"chat_id":CHAT_ID},files={"document":f})
     print("Sent to Telegram")
